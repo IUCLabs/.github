@@ -1,0 +1,36 @@
+# Required org-wide by terraform-git; runs in the PR's base repo and never checks out PR code.
+name: ci-files-guard
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  ci-files-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          changed=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)' |
+            grep -E '^(\.github/workflows/|Makefile$|\.pre-commit-config\.yaml$)' || true)
+          if [ -z "$changed" ]; then
+            echo "no CI files changed"
+            exit 0
+          fi
+          printf 'CI files changed:\n%s\n' "$changed"
+          for user in $(printf '%s\n' "$AUTHOR" "$ACTOR" | sort -u); do
+            role=$(gh api "repos/$REPO/collaborators/$user/permission" --jq .role_name)
+            case "$role" in
+              admin | maintain) echo "$user is $role" ;;
+              *) echo "::error::$user ($role) cannot change CI files in $REPO, only maintainers can"; exit 1 ;;
+            esac
+          done
