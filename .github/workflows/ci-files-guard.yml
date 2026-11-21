@@ -3,6 +3,8 @@ name: ci-files-guard
 
 on:
   pull_request:
+    # edited covers a base-branch change, which alters the diff without a new head SHA
+    types: [opened, synchronize, reopened, edited]
 
 permissions:
   contents: read
@@ -20,17 +22,26 @@ jobs:
           ACTOR: ${{ github.actor }}
         run: |
           set -euo pipefail
-          changed=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)' |
-            grep -E '^(\.github/workflows/|Makefile$|\.pre-commit-config\.yaml$)' || true)
+          fail() { echo "::error::$*"; exit 1; }
+          meta=$(gh api "repos/$REPO/pulls/$PR" --jq '"\(.changed_files) \(.commits)"')
+          read -r nfiles ncommits <<<"$meta"
+          [ "$nfiles" -lt 3000 ] || fail "$nfiles changed files exceeds the files API limit, cannot verify"
+          files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)')
+          changed=$(printf '%s\n' "$files" | grep -E '^(\.github/workflows/|Makefile$|\.pre-commit-config\.yaml$)') || [ $? -eq 1 ]
           if [ -z "$changed" ]; then
             echo "no CI files changed"
             exit 0
           fi
           printf 'CI files changed:\n%s\n' "$changed"
-          for user in $(printf '%s\n' "$AUTHOR" "$ACTOR" | sort -u); do
+          [ "$ncommits" -le 250 ] || fail "$ncommits commits exceeds the commits API limit, cannot verify"
+          # web-flow commits are made by GitHub on behalf of the commit author, who is still checked
+          users=$(gh api --paginate "repos/$REPO/pulls/$PR/commits" --jq '.[] |
+            (.author.login // "!\(.sha)"), (.committer.login // "!\(.sha)" | select(. != "web-flow"))')
+          for user in $(printf '%s\n' "$AUTHOR" "$ACTOR" $users | sort -u); do
+            case "$user" in "!"*) fail "commit ${user#!} has no linked GitHub user" ;; esac
             role=$(gh api "repos/$REPO/collaborators/$user/permission" --jq .role_name)
             case "$role" in
               admin | maintain) echo "$user is $role" ;;
-              *) echo "::error::$user ($role) cannot change CI files in $REPO, only maintainers can"; exit 1 ;;
+              *) fail "$user ($role) cannot change CI files in $REPO, only maintainers can" ;;
             esac
           done
