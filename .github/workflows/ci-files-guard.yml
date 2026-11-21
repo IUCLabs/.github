@@ -45,6 +45,10 @@ jobs:
           if [ "$AUTHOR" = "dependabot[bot]" ] && ! printf '%s\n' $users | grep -qvxF 'dependabot[bot]'; then
             check=$(printf '%s\n' "$check" | grep -vxF 'dependabot[bot]') || [ $? -eq 1 ]
           fi
+          # the org coder app is exempt only on PRs it opened; maintainer code-owner review still gates them
+          if [ "$AUTHOR" = "iuclabs-coder[bot]" ]; then
+            check=$(printf '%s\n' "$check" | grep -vxF 'iuclabs-coder[bot]') || [ $? -eq 1 ]
+          fi
           for user in $check; do
             case "$user" in "!"*) fail "commit ${user#!} has no linked GitHub user" ;; esac
             role=$(gh api "repos/$REPO/collaborators/$user/permission" --jq .role_name)
