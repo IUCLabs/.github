@@ -23,11 +23,13 @@ jobs:
         run: |
           set -euo pipefail
           fail() { echo "::error::$*"; exit 1; }
+          [ -n "$AUTHOR" ] && [ -n "$ACTOR" ] || fail "PR author or actor is empty, cannot verify"
           meta=$(gh api "repos/$REPO/pulls/$PR" --jq '"\(.changed_files) \(.commits)"')
           read -r nfiles ncommits <<<"$meta"
           [ "$nfiles" -lt 3000 ] || fail "$nfiles changed files exceeds the files API limit, cannot verify"
           files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)')
-          changed=$(printf '%s\n' "$files" | grep -E '^(\.github/workflows/|Makefile$|\.pre-commit-config\.yaml$)') || [ $? -eq 1 ]
+          [ -n "$files" ] || [ "$nfiles" -eq 0 ] || fail "files API returned no files for $nfiles changed files, cannot verify"
+          changed=$(printf '%s\n' "$files" | grep -E '^(\.github/workflows/|\.pre-commit-config\.yaml$)|(^|/)(GNUmakefile|[Mm]akefile)$') || [ $? -eq 1 ]
           if [ -z "$changed" ]; then
             echo "no CI files changed"
             exit 0
