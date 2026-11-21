@@ -1,0 +1,55 @@
+# Required org-wide by terraform-git; runs in the PR's base repo and never checks out PR code.
+name: ci-files-guard
+
+on:
+  pull_request:
+    # edited covers a base-branch change, which alters the diff without a new head SHA
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  ci-files-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+          [ -n "$AUTHOR" ] && [ -n "$ACTOR" ] || fail "PR author or actor is empty, cannot verify"
+          meta=$(gh api "repos/$REPO/pulls/$PR" --jq '"\(.changed_files) \(.commits)"')
+          read -r nfiles ncommits <<<"$meta"
+          [ "$nfiles" -lt 3000 ] || fail "$nfiles changed files exceeds the files API limit, cannot verify"
+          files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)')
+          [ -n "$files" ] || [ "$nfiles" -eq 0 ] || fail "files API returned no files for $nfiles changed files, cannot verify"
+          changed=$(printf '%s\n' "$files" | grep -E '^(\.github/workflows/|\.pre-commit-config\.yaml$)|(^|/)(GNUmakefile|[Mm]akefile)$') || [ $? -eq 1 ]
+          if [ -z "$changed" ]; then
+            echo "no CI files changed"
+            exit 0
+          fi
+          printf 'CI files changed:\n%s\n' "$changed"
+          [ "$ncommits" -le 250 ] || fail "$ncommits commits exceeds the commits API limit, cannot verify"
+          # web-flow commits are made by GitHub on behalf of the commit author, who is still checked
+          users=$(gh api --paginate "repos/$REPO/pulls/$PR/commits" --jq '.[] |
+            (.author.login // "!\(.sha)"), (.committer.login // "!\(.sha)" | select(. != "web-flow"))')
+          [ -n "$users" ] || [ "$ncommits" -eq 0 ] || fail "commits API returned no commits for $ncommits commits, cannot verify"
+          check=$(printf '%s\n' "$AUTHOR" "$ACTOR" $users | sort -u)
+          # Dependabot is exempt only while it authored the PR and every commit; anyone else involved is still checked
+          if [ "$AUTHOR" = "dependabot[bot]" ] && ! printf '%s\n' $users | grep -qvxF 'dependabot[bot]'; then
+            check=$(printf '%s\n' "$check" | grep -vxF 'dependabot[bot]') || [ $? -eq 1 ]
+          fi
+          for user in $check; do
+            case "$user" in "!"*) fail "commit ${user#!} has no linked GitHub user" ;; esac
+            role=$(gh api "repos/$REPO/collaborators/$user/permission" --jq .role_name)
+            case "$role" in
+              admin | maintain) echo "$user is $role" ;;
+              *) fail "$user ($role) cannot change CI files in $REPO, only maintainers can" ;;
+            esac
+          done
