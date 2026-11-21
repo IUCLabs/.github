@@ -46,6 +46,8 @@ jobs:
             check=$(printf '%s\n' "$check" | grep -vxF 'dependabot[bot]') || [ $? -eq 1 ]
           fi
           for user in $check; do
+            # the org's coder app; its PRs still need maintainer code-owner approval
+            [ "$user" = "iuclabs-coder[bot]" ] && { echo "$user is the org coder app"; continue; }
             case "$user" in "!"*) fail "commit ${user#!} has no linked GitHub user" ;; esac
             role=$(gh api "repos/$REPO/collaborators/$user/permission" --jq .role_name)
             case "$role" in
