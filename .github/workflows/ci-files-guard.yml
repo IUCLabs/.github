@@ -39,7 +39,13 @@ jobs:
           # web-flow commits are made by GitHub on behalf of the commit author, who is still checked
           users=$(gh api --paginate "repos/$REPO/pulls/$PR/commits" --jq '.[] |
             (.author.login // "!\(.sha)"), (.committer.login // "!\(.sha)" | select(. != "web-flow"))')
-          for user in $(printf '%s\n' "$AUTHOR" "$ACTOR" $users | sort -u); do
+          [ -n "$users" ] || [ "$ncommits" -eq 0 ] || fail "commits API returned no commits for $ncommits commits, cannot verify"
+          check=$(printf '%s\n' "$AUTHOR" "$ACTOR" $users | sort -u)
+          # Dependabot is exempt only while it authored the PR and every commit; anyone else involved is still checked
+          if [ "$AUTHOR" = "dependabot[bot]" ] && ! printf '%s\n' $users | grep -qvxF 'dependabot[bot]'; then
+            check=$(printf '%s\n' "$check" | grep -vxF 'dependabot[bot]') || [ $? -eq 1 ]
+          fi
+          for user in $check; do
             case "$user" in "!"*) fail "commit ${user#!} has no linked GitHub user" ;; esac
             role=$(gh api "repos/$REPO/collaborators/$user/permission" --jq .role_name)
             case "$role" in
